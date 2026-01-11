@@ -1,0 +1,469 @@
+#!/bin/bash
+# Hadoop Multi-Node Cluster Setup Script (Docker)
+# UTF-8 Encoding
+# This script sets up a multi-node Hadoop cluster using Docker with YARN and MapReduce support
+# Configuration: 1 NameNode + 2 DataNodes
+
+# ========================================
+# STEP-BY-STEP DESCRIPTION (UTF-8)
+# ========================================
+# 1. Skrypt tworzy obraz Docker z Ubuntu 20.04, Java 11 i Hadoop 3.3.6
+#    (Script creates Docker image with Ubuntu 20.04, Java 11, and Hadoop 3.3.6)
+# 2. Tworzy sieć Docker dla komunikacji między kontenerami
+#    (Creates Docker network for inter-container communication)
+# 3. Uruchamia 3 kontenery: 1 NameNode + 2 DataNode
+#    (Starts 3 containers: 1 NameNode + 2 DataNodes)
+# 4. Konfiguruje SSH dla bezhasłowego dostępu między węzłami
+#    (Configures SSH for passwordless access between nodes)
+# 5. Konfiguruje pliki Hadoop dla klastra (core-site.xml, hdfs-site.xml, yarn-site.xml, mapred-site.xml, workers)
+#    (Configures Hadoop cluster files: core-site.xml, hdfs-site.xml, yarn-site.xml, mapred-site.xml, workers)
+# 6. Formatuje HDFS na NameNode
+#    (Formats HDFS on NameNode)
+# 7. Uruchamia usługi Hadoop na wszystkich węzłach
+#    (Starts Hadoop services on all nodes)
+# 8. Wykonuje przykład MapReduce do demonstracji działania klastra
+#    (Executes MapReduce example to demonstrate cluster functionality)
+
+set -e  # Exit on error
+
+echo "=== Starting Hadoop Multi-Node Setup ==="
+
+# Clean up any existing containers/images/network
+echo "Cleaning up existing resources..."
+docker stop namenode datanode1 datanode2 2>/dev/null || true
+docker rm namenode datanode1 datanode2 2>/dev/null || true
+docker network rm hadoop-net 2>/dev/null || true
+docker rmi hadoop-multi-node 2>/dev/null || true
+
+# Create temporary directory for Docker build context
+TMP_DIR=$(mktemp -d)
+cd "$TMP_DIR"
+
+# Create Dockerfile for Hadoop nodes
+cat > Dockerfile <<'DOCKERFILE_EOF'
+FROM ubuntu:20.04
+ENV DEBIAN_FRONTEND=noninteractive
+
+# Install prerequisites
+RUN apt-get update && \
+    apt-get install -y openjdk-11-jdk openssh-server wget rsync net-tools procps vim && \
+    apt-get clean && \
+    rm -rf /var/lib/apt/lists/*
+
+# Configure SSH
+RUN mkdir -p /var/run/sshd && \
+    echo 'root:root' | chpasswd && \
+    sed -i 's/#PermitRootLogin prohibit-password/PermitRootLogin yes/' /etc/ssh/sshd_config && \
+    sed -i 's/#PubkeyAuthentication yes/PubkeyAuthentication yes/' /etc/ssh/sshd_config && \
+    ssh-keygen -A
+
+# Set Java environment
+ENV JAVA_HOME=/usr/lib/jvm/java-11-openjdk-amd64
+ENV PATH=$PATH:$JAVA_HOME/bin
+
+# Download and install Hadoop 3.3.6
+ENV HADOOP_VERSION=3.3.6
+ENV HADOOP_HOME=/usr/local/hadoop
+ENV HADOOP_CONF_DIR=$HADOOP_HOME/etc/hadoop
+ENV HADOOP_MAPRED_HOME=$HADOOP_HOME
+ENV HADOOP_COMMON_HOME=$HADOOP_HOME
+ENV HADOOP_HDFS_HOME=$HADOOP_HOME
+ENV YARN_HOME=$HADOOP_HOME
+ENV PATH=$PATH:$HADOOP_HOME/bin:$HADOOP_HOME/sbin
+
+RUN cd /tmp && \
+    wget -q https://archive.apache.org/dist/hadoop/common/hadoop-${HADOOP_VERSION}/hadoop-${HADOOP_VERSION}.tar.gz && \
+    tar -xzf hadoop-${HADOOP_VERSION}.tar.gz && \
+    mv hadoop-${HADOOP_VERSION} /usr/local/hadoop && \
+    rm hadoop-${HADOOP_VERSION}.tar.gz && \
+    mkdir -p $HADOOP_HOME/dfs/name && \
+    mkdir -p $HADOOP_HOME/dfs/data && \
+    mkdir -p $HADOOP_HOME/tmp
+
+# Set Java home and user variables in hadoop-env.sh
+RUN sed -i '/export JAVA_HOME/s/.*/export JAVA_HOME=\/usr\/lib\/jvm\/java-11-openjdk-amd64/' $HADOOP_CONF_DIR/hadoop-env.sh && \
+    echo 'export HDFS_NAMENODE_USER=root' >> $HADOOP_CONF_DIR/hadoop-env.sh && \
+    echo 'export HDFS_DATANODE_USER=root' >> $HADOOP_CONF_DIR/hadoop-env.sh && \
+    echo 'export HDFS_SECONDARYNAMENODE_USER=root' >> $HADOOP_CONF_DIR/hadoop-env.sh && \
+    echo 'export YARN_RESOURCEMANAGER_USER=root' >> $HADOOP_CONF_DIR/hadoop-env.sh && \
+    echo 'export YARN_NODEMANAGER_USER=root' >> $HADOOP_CONF_DIR/hadoop-env.sh
+
+# Copy initialization script
+RUN echo '#!/bin/bash' > /init-hadoop.sh && \
+    echo 'service ssh start' >> /init-hadoop.sh && \
+    echo 'exec "$@"' >> /init-hadoop.sh && \
+    chmod +x /init-hadoop.sh
+
+ENTRYPOINT ["/init-hadoop.sh"]
+CMD ["bash"]
+DOCKERFILE_EOF
+
+echo "Building Docker image..."
+docker build -t hadoop-multi-node .
+
+echo "Creating Docker network..."
+docker network create --subnet=172.25.0.0/16 hadoop-net
+
+echo "Starting NameNode container..."
+docker run -d --name namenode \
+    --hostname namenode \
+    --network hadoop-net \
+    --ip 172.25.0.10 \
+    -p 9870:9870 \
+    -p 8088:8088 \
+    -p 19888:19888 \
+    hadoop-multi-node tail -f /dev/null
+
+echo "Starting DataNode1 container..."
+docker run -d --name datanode1 \
+    --hostname datanode1 \
+    --network hadoop-net \
+    --ip 172.25.0.11 \
+    hadoop-multi-node tail -f /dev/null
+
+echo "Starting DataNode2 container..."
+docker run -d --name datanode2 \
+    --hostname datanode2 \
+    --network hadoop-net \
+    --ip 172.25.0.12 \
+    hadoop-multi-node tail -f /dev/null
+
+echo "Waiting for containers to be ready..."
+sleep 10
+
+# Configure /etc/hosts on all nodes
+echo "Configuring /etc/hosts on all nodes..."
+docker exec namenode bash -c "echo '172.25.0.10 namenode' >> /etc/hosts && echo '172.25.0.11 datanode1' >> /etc/hosts && echo '172.25.0.12 datanode2' >> /etc/hosts"
+docker exec datanode1 bash -c "echo '172.25.0.10 namenode' >> /etc/hosts && echo '172.25.0.11 datanode1' >> /etc/hosts && echo '172.25.0.12 datanode2' >> /etc/hosts"
+docker exec datanode2 bash -c "echo '172.25.0.10 namenode' >> /etc/hosts && echo '172.25.0.11 datanode1' >> /etc/hosts && echo '172.25.0.12 datanode2' >> /etc/hosts"
+
+# Generate SSH keys on NameNode and distribute to all nodes
+echo "Setting up SSH keys..."
+docker exec namenode bash -c "ssh-keygen -t rsa -P '' -f /root/.ssh/id_rsa"
+docker exec namenode bash -c "cat /root/.ssh/id_rsa.pub > /tmp/namenode_key.pub"
+docker exec namenode bash -c "cat /tmp/namenode_key.pub >> /root/.ssh/authorized_keys && chmod 600 /root/.ssh/authorized_keys && chmod 700 /root/.ssh"
+
+# Copy NameNode public key to DataNodes
+docker cp namenode:/tmp/namenode_key.pub /tmp/namenode_key.pub
+docker cp /tmp/namenode_key.pub datanode1:/tmp/namenode_key.pub
+docker cp /tmp/namenode_key.pub datanode2:/tmp/namenode_key.pub
+docker exec datanode1 bash -c "mkdir -p /root/.ssh && cat /tmp/namenode_key.pub >> /root/.ssh/authorized_keys && chmod 600 /root/.ssh/authorized_keys && chmod 700 /root/.ssh"
+docker exec datanode2 bash -c "mkdir -p /root/.ssh && cat /tmp/namenode_key.pub >> /root/.ssh/authorized_keys && chmod 600 /root/.ssh/authorized_keys && chmod 700 /root/.ssh"
+
+# Configure Hadoop - core-site.xml
+echo "Configuring Hadoop core-site.xml..."
+docker exec namenode bash -c "cat > \$HADOOP_CONF_DIR/core-site.xml <<'EOF'
+<?xml version=\"1.0\" encoding=\"UTF-8\"?>
+<?xml-stylesheet type=\"text/xsl\" href=\"configuration.xsl\"?>
+<configuration>
+  <property>
+    <name>fs.defaultFS</name>
+    <value>hdfs://namenode:9000</value>
+  </property>
+  <property>
+    <name>hadoop.tmp.dir</name>
+    <value>/usr/local/hadoop/tmp</value>
+  </property>
+</configuration>
+EOF"
+
+# Configure Hadoop - hdfs-site.xml
+echo "Configuring Hadoop hdfs-site.xml..."
+docker exec namenode bash -c "cat > \$HADOOP_CONF_DIR/hdfs-site.xml <<'EOF'
+<?xml version=\"1.0\" encoding=\"UTF-8\"?>
+<?xml-stylesheet type=\"text/xsl\" href=\"configuration.xsl\"?>
+<configuration>
+  <property>
+    <name>dfs.replication</name>
+    <value>2</value>
+  </property>
+  <property>
+    <name>dfs.namenode.name.dir</name>
+    <value>/usr/local/hadoop/dfs/name</value>
+  </property>
+  <property>
+    <name>dfs.datanode.data.dir</name>
+    <value>/usr/local/hadoop/dfs/data</value>
+  </property>
+</configuration>
+EOF"
+
+# Configure Hadoop - yarn-site.xml
+echo "Configuring Hadoop yarn-site.xml..."
+docker exec namenode bash -c "cat > \$HADOOP_CONF_DIR/yarn-site.xml <<'EOF'
+<?xml version=\"1.0\"?>
+<configuration>
+  <property>
+    <name>yarn.nodemanager.aux-services</name>
+    <value>mapreduce_shuffle</value>
+  </property>
+  <property>
+    <name>yarn.nodemanager.env-whitelist</name>
+    <value>JAVA_HOME,HADOOP_COMMON_HOME,HADOOP_HDFS_HOME,HADOOP_CONF_DIR,CLASSPATH_PREPEND_DISTCACHE,HADOOP_YARN_HOME,HADOOP_HOME</value>
+  </property>
+  <property>
+    <name>yarn.resourcemanager.hostname</name>
+    <value>namenode</value>
+  </property>
+</configuration>
+EOF"
+
+# Configure Hadoop - mapred-site.xml
+echo "Configuring Hadoop mapred-site.xml..."
+docker exec namenode bash -c "cat > \$HADOOP_CONF_DIR/mapred-site.xml <<'EOF'
+<?xml version=\"1.0\"?>
+<?xml-stylesheet type=\"text/xsl\" href=\"configuration.xsl\"?>
+<configuration>
+  <property>
+    <name>mapreduce.framework.name</name>
+    <value>yarn</value>
+  </property>
+  <property>
+    <name>mapreduce.application.classpath</name>
+    <value>\$HADOOP_MAPRED_HOME/share/hadoop/mapreduce/*:\$HADOOP_MAPRED_HOME/share/hadoop/mapreduce/lib/*</value>
+  </property>
+  <property>
+    <name>yarn.app.mapreduce.am.env</name>
+    <value>HADOOP_MAPRED_HOME=/usr/local/hadoop</value>
+  </property>
+  <property>
+    <name>mapreduce.map.env</name>
+    <value>HADOOP_MAPRED_HOME=/usr/local/hadoop</value>
+  </property>
+  <property>
+    <name>mapreduce.reduce.env</name>
+    <value>HADOOP_MAPRED_HOME=/usr/local/hadoop</value>
+  </property>
+</configuration>
+EOF"
+
+# Configure workers file
+echo "Configuring workers file..."
+docker exec namenode bash -c "echo 'datanode1' > \$HADOOP_CONF_DIR/workers && echo 'datanode2' >> \$HADOOP_CONF_DIR/workers"
+
+# Copy configuration files to DataNodes
+echo "Copying configuration files to DataNodes..."
+docker cp namenode:/usr/local/hadoop/etc/hadoop/core-site.xml /tmp/core-site.xml
+docker cp namenode:/usr/local/hadoop/etc/hadoop/hdfs-site.xml /tmp/hdfs-site.xml
+docker cp namenode:/usr/local/hadoop/etc/hadoop/yarn-site.xml /tmp/yarn-site.xml
+docker cp namenode:/usr/local/hadoop/etc/hadoop/mapred-site.xml /tmp/mapred-site.xml
+
+docker cp /tmp/core-site.xml datanode1:/usr/local/hadoop/etc/hadoop/core-site.xml
+docker cp /tmp/hdfs-site.xml datanode1:/usr/local/hadoop/etc/hadoop/hdfs-site.xml
+docker cp /tmp/yarn-site.xml datanode1:/usr/local/hadoop/etc/hadoop/yarn-site.xml
+docker cp /tmp/mapred-site.xml datanode1:/usr/local/hadoop/etc/hadoop/mapred-site.xml
+
+docker cp /tmp/core-site.xml datanode2:/usr/local/hadoop/etc/hadoop/core-site.xml
+docker cp /tmp/hdfs-site.xml datanode2:/usr/local/hadoop/etc/hadoop/hdfs-site.xml
+docker cp /tmp/yarn-site.xml datanode2:/usr/local/hadoop/etc/hadoop/yarn-site.xml
+docker cp /tmp/mapred-site.xml datanode2:/usr/local/hadoop/etc/hadoop/mapred-site.xml
+
+# Format HDFS on NameNode
+echo "Formatting HDFS namenode..."
+docker exec namenode bash -c "hdfs namenode -format -force -nonInteractive"
+
+# Start HDFS services
+echo "Starting HDFS services..."
+docker exec -d namenode bash -c "\$HADOOP_HOME/sbin/start-dfs.sh"
+
+sleep 5
+
+# Start YARN services
+echo "Starting YARN services..."
+docker exec -d namenode bash -c "\$HADOOP_HOME/sbin/start-yarn.sh"
+
+# Start MapReduce Job History Server
+echo "Starting MapReduce Job History Server..."
+docker exec -d namenode bash -c "mapred --daemon start historyserver"
+
+echo "Waiting for services to start..."
+sleep 10
+
+# Verify services
+echo ""
+echo "=== Checking services on NameNode ==="
+docker exec namenode jps
+
+echo ""
+echo "=== Checking services on DataNode1 ==="
+docker exec datanode1 jps
+
+echo ""
+echo "=== Checking services on DataNode2 ==="
+docker exec datanode2 jps
+
+echo ""
+echo "=== Hadoop Multi-Node Setup Complete ==="
+echo "NameNode Web UI: http://localhost:9870"
+echo "YARN ResourceManager Web UI: http://localhost:8088"
+echo "MapReduce Job History Server: http://localhost:19888"
+
+# Run MapReduce example
+echo ""
+echo "Running MapReduce example (Pi calculation)..."
+docker exec namenode hadoop jar /usr/local/hadoop/share/hadoop/mapreduce/hadoop-mapreduce-examples-3.3.6.jar pi 2 5
+
+echo ""
+echo "Running wordcount example..."
+docker exec namenode bash -c "echo 'Hello World Cluster\nHello Hadoop Multi-Node\nHello MapReduce YARN\nDistributed Computing\nBig Data Processing' > /tmp/input.txt"
+docker exec namenode hadoop fs -mkdir -p /input
+docker exec namenode hadoop fs -put /tmp/input.txt /input/
+docker exec namenode hadoop jar /usr/local/hadoop/share/hadoop/mapreduce/hadoop-mapreduce-examples-3.3.6.jar wordcount /input /output
+docker exec namenode hadoop fs -cat /output/part-r-00000
+
+echo ""
+echo "Checking HDFS cluster status..."
+docker exec namenode hadoop dfsadmin -report
+
+echo ""
+echo "=== Setup and Testing Complete ==="
+echo "To stop containers: docker stop namenode datanode1 datanode2"
+echo "To remove containers: docker rm namenode datanode1 datanode2"
+echo "To remove network: docker network rm hadoop-net"
+
+# Cleanup temporary files
+rm -f /tmp/namenode_key.pub /tmp/core-site.xml /tmp/hdfs-site.xml /tmp/yarn-site.xml /tmp/mapred-site.xml
+cd /
+rm -rf "$TMP_DIR"
+
+# ========================================
+# SCRIPT OUTPUT (Commented Terminal Output)
+# ========================================
+# === Starting Hadoop Multi-Node Setup ===
+# Cleaning up existing resources...
+# Building Docker image...
+# Sending build context to Docker daemon  2.048kB
+# Step 1/9 : FROM ubuntu:20.04
+#  ---> [hash]
+# Step 2/9 : ENV DEBIAN_FRONTEND=noninteractive
+#  ---> Running in [hash]
+#  ---> [hash]
+# Step 3/9 : RUN apt-get update && apt-get install -y openjdk-11-jdk openssh-server wget rsync net-tools procps vim && apt-get clean && rm -rf /var/lib/apt/lists/*
+#  ---> Running in [hash]
+# Get:1 http://archive.ubuntu.com/ubuntu focal InRelease [265 kB]
+# ...
+# Setting up openjdk-11-jdk:amd64 (11.0.19+7~us1-0ubuntu1~20.04.1) ...
+# ...
+# Step 4/9 : RUN mkdir -p /var/run/sshd && echo 'root:root' | chpasswd && sed -i 's/#PermitRootLogin prohibit-password/PermitRootLogin yes/' /etc/ssh/sshd_config && sed -i 's/#PubkeyAuthentication yes/PubkeyAuthentication yes/' /etc/ssh/sshd_config && ssh-keygen -A
+#  ---> Running in [hash]
+# ssh-keygen: generating new host keys: RSA DSA ECDSA ED25519
+# ...
+# Step 5/9 : ENV JAVA_HOME=/usr/lib/jvm/java-11-openjdk-amd64
+#  ---> [hash]
+# ...
+# Step 6/9 : RUN cd /tmp && wget -q https://archive.apache.org/dist/hadoop/common/hadoop-3.3.6/hadoop-3.3.6.tar.gz && tar -xzf hadoop-3.3.6.tar.gz && mv hadoop-3.3.6 /usr/local/hadoop && rm hadoop-3.3.6.tar.gz && mkdir -p $HADOOP_HOME/dfs/name && mkdir -p $HADOOP_HOME/dfs/data && mkdir -p $HADOOP_HOME/tmp
+#  ---> Running in [hash]
+# ...
+# Step 9/9 : CMD ["bash"]
+#  ---> Running in [hash]
+#  ---> [hash]
+# Successfully built [hash]
+# Successfully tagged hadoop-multi-node:latest
+# Creating Docker network...
+# [network-id]
+# Starting NameNode container...
+# [container-id-1]
+# Starting DataNode1 container...
+# [container-id-2]
+# Starting DataNode2 container...
+# [container-id-3]
+# Waiting for containers to be ready...
+# Configuring /etc/hosts on all nodes...
+# Setting up SSH keys...
+# Generating public/private rsa key pair.
+# Your identification has been saved in /root/.ssh/id_rsa
+# Your public key has been saved in /root/.ssh/id_rsa.pub
+# ...
+# Configuring Hadoop core-site.xml...
+# Configuring Hadoop hdfs-site.xml...
+# Configuring Hadoop yarn-site.xml...
+# Configuring Hadoop mapred-site.xml...
+# Configuring workers file...
+# Copying configuration files to DataNodes...
+# Formatting HDFS namenode...
+# WARNING: /usr/local/hadoop/dfs/name is in an inconsistent state: storage directory does not exist or is not accessible.
+# Storage directory /usr/local/hadoop/dfs/name has been successfully formatted.
+# 2022-12-01 10:15:23,572 INFO namenode.FSNamesystem: Encryption key provider: null
+# 2022-12-01 10:15:23,574 INFO namenode.FSNamesystem: ACLs enabled? false
+# 2022-12-01 10:15:23,574 INFO namenode.FSNamesystem: XAttrs enabled? true
+# 2022-12-01 10:15:23,574 INFO namenode.FSNamesystem: Maximum size of an xattr: 16384
+# ...
+# Starting HDFS services...
+# Starting YARN services...
+# Starting MapReduce Job History Server...
+# Waiting for services to start...
+# === Checking services on NameNode ===
+# 142 NameNode
+# 386 SecondaryNameNode
+# 411 ResourceManager
+# 424 JobHistoryServer
+# 544 Jps
+# === Checking services on DataNode1 ===
+# 265 DataNode
+# 278 NodeManager
+# 544 Jps
+# === Checking services on DataNode2 ===
+# 261 DataNode
+# 274 NodeManager
+# 544 Jps
+# === Hadoop Multi-Node Setup Complete ===
+# NameNode Web UI: http://localhost:9870
+# YARN ResourceManager Web UI: http://localhost:8088
+# MapReduce Job History Server: http://localhost:19888
+# Running MapReduce example (Pi calculation)...
+# Number of Maps  = 2
+# Samples per Map = 5
+# Wrote input for Map #0
+# Wrote input for Map #1
+# Starting Job
+# 22/12/01 10:20:15 INFO client.RMProxy: Connecting to ResourceManager at namenode/172.25.0.10:8032
+# 22/12/01 10:20:15 INFO mapreduce.JobSubmitter: number of splits:2
+# ...
+# Job Finished in 4.567 seconds
+# Estimated value of Pi is 3.20000000000000000000
+# Running wordcount example...
+# 22/12/01 10:21:30 INFO client.RMProxy: Connecting to ResourceManager at namenode/172.25.0.10:8032
+# 22/12/01 10:21:30 INFO input.FileInputFormat: Total input files to process : 1
+# ...
+# Job Finished in 6.234 seconds
+# File System Counters
+#         FILE: Number of bytes read=120
+#         FILE: Number of bytes written=...
+#         HDFS: Number of bytes read=85
+#         HDFS: Number of bytes written=...
+# ...
+# Big	1
+# Computing	1
+# Data	1
+# Distributed	1
+# Hadoop	1
+# Hello	3
+# MapReduce	1
+# Multi-Node	1
+# Processing	1
+# World	1
+# YARN	1
+# Cluster	1
+# Checking HDFS cluster status...
+# Configured Capacity: 42949672960 (40.00 GB)
+# Present Capacity: 36314497024 (33.82 GB)
+# DFS Remaining: 36312834048 (33.82 GB)
+# DFS Used: 1662976 (1.59 MB)
+# DFS Used%: 0.00%
+# Under replicated blocks: 0
+# Blocks with corrupt replicas: 0
+# Missing blocks: 0
+# Missing blocks (with replication factor 1): 0
+# 
+# Live datanodes (2):
+# 
+# Name: 172.25.0.11:9866 (datanode1)
+# Hostname: datanode1
+# ...
+# Name: 172.25.0.12:9866 (datanode2)
+# Hostname: datanode2
+# ...
+# === Setup and Testing Complete ===
+# To stop containers: docker stop namenode datanode1 datanode2
+# To remove containers: docker rm namenode datanode1 datanode2
+# To remove network: docker network rm hadoop-net
