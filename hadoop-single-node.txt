@@ -6,16 +6,11 @@
 # ========================================
 # STEP-BY-STEP DESCRIPTION (UTF-8)
 # ========================================
-# 1. Skrypt tworzy obraz Docker z Ubuntu 20.04, Java 11 i Hadoop 3.3.6
-#    (Script creates Docker image with Ubuntu 20.04, Java 11, and Hadoop 3.3.6)
-# 2. Konfiguruje Hadoop w trybie pseudo-rozproszonym (wszystkie serwisy na jednym węźle)
-#    (Configures Hadoop in pseudo-distributed mode - all services on single node)
-# 3. Uruchamia usługi HDFS i YARN
-#    (Starts HDFS and YARN services)
-# 4. Wykonuje przykład MapReduce do demonstracji działania
-#    (Executes MapReduce example to demonstrate functionality)
-# 5. Wyświetla status klastra i informacje o interfejsach webowych
-#    (Displays cluster status and web interface information)
+# 1. (Script creates Docker image with Ubuntu 20.04, Java 11, and Hadoop 3.3.6)
+# 2. (Configures Hadoop in pseudo-distributed mode - all services on single node)
+# 3. (Starts HDFS and YARN services)
+# 4. (Executes MapReduce example to demonstrate functionality)
+# 5. (Displays cluster status and web interface information)
 
 set -e  # Exit on error
 

@@ -7,22 +7,14 @@
 # ========================================
 # STEP-BY-STEP DESCRIPTION (UTF-8)
 # ========================================
-# 1. Skrypt tworzy obraz Docker z Ubuntu 20.04, Java 11 i Hadoop 3.3.6
-#    (Script creates Docker image with Ubuntu 20.04, Java 11, and Hadoop 3.3.6)
-# 2. Tworzy sieć Docker dla komunikacji między kontenerami
-#    (Creates Docker network for inter-container communication)
-# 3. Uruchamia 3 kontenery: 1 NameNode + 2 DataNode
-#    (Starts 3 containers: 1 NameNode + 2 DataNodes)
-# 4. Konfiguruje SSH dla bezhasłowego dostępu między węzłami
-#    (Configures SSH for passwordless access between nodes)
-# 5. Konfiguruje pliki Hadoop dla klastra (core-site.xml, hdfs-site.xml, yarn-site.xml, mapred-site.xml, workers)
-#    (Configures Hadoop cluster files: core-site.xml, hdfs-site.xml, yarn-site.xml, mapred-site.xml, workers)
-# 6. Formatuje HDFS na NameNode
-#    (Formats HDFS on NameNode)
-# 7. Uruchamia usługi Hadoop na wszystkich węzłach
-#    (Starts Hadoop services on all nodes)
-# 8. Wykonuje przykład MapReduce do demonstracji działania klastra
-#    (Executes MapReduce example to demonstrate cluster functionality)
+# 1. (Script creates Docker image with Ubuntu 20.04, Java 11, and Hadoop 3.3.6)
+# 2. (Creates Docker network for inter-container communication)
+# 3. (Starts 3 containers: 1 NameNode + 2 DataNodes)
+# 4. (Configures SSH for passwordless access between nodes)
+# 5. (Configures Hadoop cluster files: core-site.xml, hdfs-site.xml, yarn-site.xml, mapred-site.xml, workers)
+# 6. (Formats HDFS on NameNode)
+# 7. (Starts Hadoop services on all nodes)
+# 8. (Executes MapReduce example to demonstrate cluster functionality)
 
 set -e  # Exit on error
 
